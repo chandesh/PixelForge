@@ -1,0 +1,12 @@
+{
+  "/api": {
+    "target": "http://backend:8383",
+    "secure": false,
+    "logLevel": "debug"
+  },
+  "/media": {
+    "target": "http://backend:8383",
+    "secure": false,
+    "logLevel": "debug"
+  }
+}

@@ -1,0 +1,64 @@
+version: "3.8"
+
+services:
+  db:
+    image: postgres:16
+    expose:
+      - "5432"
+    volumes:
+      - pgdata_prod:/var/lib/postgresql/data
+    env_file: .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-pixelforge}
+      POSTGRES_USER: ${POSTGRES_USER:-pixelforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pixelforge}
+
+  redis:
+    image: redis:7-alpine
+    expose:
+      - "6379"
+
+  backend:
+    build: ./backend
+    expose:
+      - "8383"
+    env_file: .env
+    depends_on:
+      - db
+      - redis
+    command: gunicorn core.wsgi:application --bind 0.0.0.0:8383 --workers 4
+
+  worker:
+    build: ./backend
+    env_file: .env
+    depends_on:
+      - db
+      - redis
+    command: celery -A core.celery worker --loglevel=warning --concurrency=4
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: prod
+    expose:
+      - "80"
+    depends_on:
+      - backend
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.prod.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      # TODO: Mount SSL certificates for HTTPS
+      # - ./certs:/etc/nginx/certs:ro
+    depends_on:
+      - frontend
+      - backend
+
+volumes:
+  pgdata_prod:
