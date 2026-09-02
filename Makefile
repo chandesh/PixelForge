@@ -1,4 +1,4 @@
-DC = docker-compose
+DC := $(shell command -v docker-compose >/dev/null 2>&1 && echo "docker-compose" || echo "docker compose")
 DCE = $(DC) exec
 DCR = $(DC) run --rm
 

@@ -7,7 +7,7 @@
 FROM node:20-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm ci; npm install @rollup/rollup-linux-arm64-gnu --no-save 2>&1 || true
+RUN npm ci
 
 # Stage 2 — dev: development with hot reload
 FROM node:20-slim AS dev
