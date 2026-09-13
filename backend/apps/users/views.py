@@ -20,11 +20,11 @@ class UserViewSet(RetrieveModelMixin, UpdateModelMixin, GenericViewSet):
 
     @action(detail=False, methods=["get", "put"])
     def me(self, request):
-        if request.method == "GET":
+        if request.method ==  "GET":
             serializer = self.get_serializer(request.user)
             return Response({"success": True, "data": serializer.data, "message": "", "errors": None})
         serializer = self.get_serializer(request.user, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
+        serializer.is_valid(raise_exception = True)
         serializer.save()
         return Response({"success": True, "data": serializer.data, "message": "Profile updated.", "errors": None})
 

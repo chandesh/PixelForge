@@ -45,7 +45,7 @@ def register(request):
 @permission_classes([AllowAny])
 def login(request):
     serializer = LoginSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
+    serializer.is_valid(raise_exception = True)
     user = authenticate(
         email=serializer.validated_data["email"],
         password=serializer.validated_data["password"],
