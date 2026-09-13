@@ -6,13 +6,13 @@ from .models import User
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ("id", "email", "name", "created_at", "updated_at")
+        fields =  ("id", "email", "name", "created_at", "updated_at")
         read_only_fields = ("id", "created_at", "updated_at")
 
 
 class ChangePasswordSerializer(serializers.Serializer):
     current_password = serializers.CharField(required=True)
-    new_password = serializers.CharField(required=True, min_length=8)
+    new_password = serializers.CharField(required=True,  min_length=8)
     confirm_password = serializers.CharField(required=True)
 
     def validate(self, attrs):
