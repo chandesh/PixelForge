@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def register(request):
-    serializer = RegisterSerializer(data=request.data)
+    serializer = RegisterSerializer(data = request.data)
     if not serializer.is_valid():
         return Response(
             {"success": False, "data": None, "message": "Validation failed.", "errors": serializer.errors},
@@ -55,13 +55,13 @@ def login(request):
             {"success": False, "data": None, "message": "Invalid credentials.", "errors": None},
             status=status.HTTP_401_UNAUTHORIZED,
         )
-    refresh = RefreshToken.for_user(user)
+    refresh = RefreshToken.for_user(user )
     return Response(
         {
             "success": True,
             "data": {
                 "user": {
-                    "id": str(user.id),
+                    "id": str(user.id ),
                     "email": user.email,
                     "name": user.name,
                 },
