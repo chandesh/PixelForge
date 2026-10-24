@@ -1,6 +1,8 @@
 import uuid
+from io import BytesIO
 
 import pytest
+from PIL import Image
 from django.conf import settings
 from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
@@ -159,13 +161,14 @@ def celery_eager(settings):
     celery_app.conf.task_eager_propagates = True
 
 
+def make_png_bytes(width=2, height=2):
+    buffer = BytesIO()
+    Image.new("RGB", (width, height), (255, 0, 0)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 @pytest.fixture
 def uploaded_image():
-    minimal_png = (
-        b"\x89PNG\r\n\x1a\n"
-        b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-        b"\x08\x02\x00\x00\x00\x90wS\xde"
-        b"\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N"
-        b"\x00\x00\x00\x00IEND\xaeB`\x82"
+    return SimpleUploadedFile(
+        "test.png", make_png_bytes(), content_type="image/png"
     )
-    return SimpleUploadedFile("test.png", minimal_png, content_type="image/png")

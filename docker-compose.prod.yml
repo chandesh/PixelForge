@@ -19,21 +19,37 @@ services:
       - "6379"
 
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-deb.debian.org}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     expose:
       - "8383"
     env_file: .env
+    environment:
+      DJANGO_SETTINGS_MODULE: core.config.prod
+      DEBUG: "False"
     depends_on:
       - db
       - redis
+    restart: unless-stopped
     command: gunicorn core.wsgi:application --bind 0.0.0.0:8383 --workers 4
 
   worker:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-deb.debian.org}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     env_file: .env
+    environment:
+      DJANGO_SETTINGS_MODULE: core.config.prod
+      DEBUG: "False"
     depends_on:
       - db
       - redis
+    restart: unless-stopped
     command: celery -A core.celery worker --loglevel=warning --concurrency=4
 
   frontend:
@@ -50,12 +66,8 @@ services:
     image: nginx:alpine
     ports:
       - "80:80"
-      - "443:443"
     volumes:
       - ./nginx/nginx.prod.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./frontend/dist:/usr/share/nginx/html:ro
-      # TODO: Mount SSL certificates for HTTPS
-      # - ./certs:/etc/nginx/certs:ro
     depends_on:
       - frontend
       - backend

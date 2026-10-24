@@ -4,14 +4,31 @@ Primary: pyvips (libvips C bindings for speed).
 Fallback: Pillow (pure Python, slower but reliable).
 """
 import os
+import shutil
 import tempfile
 import uuid
 import logging
+
 from celery import shared_task
 from django.conf import settings
+from django.db.models import Q
 from django.utils import timezone
+from PIL import Image
+
+from .validators import (
+    ImageValidationError,
+    sanitize_label,
+    validate_image_path,
+    validate_remote_image_url,
+)
 
 logger = logging.getLogger(__name__)
+
+EXTENSION_BY_FORMAT = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp", "GIF": ".gif"}
+
+
+class NoOutputsGenerated(RuntimeError):
+    """Raised when every requested output size failed."""
 
 
 def classify_error(exception: Exception) -> str:
@@ -23,6 +40,12 @@ def classify_error(exception: Exception) -> str:
         exc_info=True,
         extra={"exception_type": exception_type},
     )
+
+    if exception_type == "NoOutputsGenerated":
+        return "None of the requested output sizes could be generated. Please try a different image or fewer sizes."
+
+    if exception_type == "ImageValidationError":
+        return str(exception)
 
     if exception_type in (
         "ConnectionError", "ConnectTimeout", "ReadTimeout",
@@ -79,41 +102,106 @@ def classify_error(exception: Exception) -> str:
 
 
 def _process_with_pyvips(source_path, dest_path, width, height):
-    """Resize using pyvips (libvips). Raises exception on failure."""
+    """Resize using pyvips, then pad to exact dimensions."""
     import pyvips
-    image = pyvips.Image.new_from_file(source_path)
+
+    image = pyvips.Image.new_from_file(source_path, access="sequential")
     resized = image.thumbnail_image(width, height=height)
-    ext = os.path.splitext(dest_path)[1].lstrip(".").upper()
-    if ext == "JPG":
-        ext = "JPEG"
-    resized.write_to_file(dest_path, Q=90)
+    left = max(0, (width - resized.width) // 2)
+    top = max(0, (height - resized.height) // 2)
+    resized = resized.embed(
+        left,
+        top,
+        width,
+        height,
+        extend="background",
+        background=[255, 255, 255],
+    )
+    ext = os.path.splitext(dest_path)[1].lower()
+    options = {"Q": 90} if ext in (".jpg", ".jpeg", ".webp") else {}
+    resized.write_to_file(dest_path, **options)
 
 
 def _process_with_pillow(source_path, dest_path, width, height):
     """Resize using Pillow as fallback."""
-    from PIL import Image
     with Image.open(source_path) as img:
-        img = img.convert("RGB") if img.mode in ("RGBA", "P") else img
+        if img.mode in ("RGBA", "P", "LA"):
+            background = Image.new("RGB", img.size, (255, 255, 255))
+            rgba = img.convert("RGBA")
+            background.paste(rgba, mask=rgba.split()[-1])
+            img = background
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
         img.thumbnail((width, height), Image.LANCZOS)
-        # Create canvas of exact size and paste
-        result = Image.new(img.mode, (width, height), (255, 255, 255))
+        result = Image.new("RGB", (width, height), (255, 255, 255))
         offset_x = (width - img.width) // 2
         offset_y = (height - img.height) // 2
         result.paste(img, (offset_x, offset_y))
         result.save(dest_path, quality=90)
 
 
-@shared_task(bind=True, max_retries=1)
-def process_resize_job(self, job_id, preset_ids=None, custom_sizes=None):
-    """Process a resize job: download source, resize to all requested sizes, upload results."""
-    from django.apps import apps
-    from .models import ResizeJob, ResizeOutput, ResizePreset
+def _download_remote_image(url: str, dest_path: str) -> None:
+    import requests
+
+    validate_remote_image_url(url)
+    max_bytes = getattr(settings, "MAX_IMAGE_DOWNLOAD_BYTES", 25 * 1024 * 1024)
+    timeout = getattr(settings, "REMOTE_FETCH_TIMEOUT_SECONDS", 30)
+
+    response = requests.get(
+        url,
+        stream=True,
+        timeout=(5, timeout),
+        allow_redirects=False,
+    )
+    try:
+        status_code = getattr(response, "status_code", None)
+        if isinstance(status_code, int) and 300 <= status_code < 400:
+            raise ImageValidationError("Image URLs must not redirect.")
+        response.raise_for_status()
+
+        headers = getattr(response, "headers", {}) or {}
+        content_length = headers.get("Content-Length") if hasattr(headers, "get") else None
+        try:
+            if content_length is not None and int(content_length) > max_bytes:
+                raise ImageValidationError("The remote image is too large.")
+        except (TypeError, ValueError):
+            pass
+
+        total = 0
+        with open(dest_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=65536):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ImageValidationError("The remote image is too large.")
+                f.write(chunk)
+    finally:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
+
+
+def _copy_stored_source(source_key: str, dest_path: str) -> None:
     from core.storage import storage
 
-    if preset_ids is None:
-        preset_ids = []
-    if custom_sizes is None:
-        custom_sizes = []
+    source = storage.open_file(source_key)
+    try:
+        with open(dest_path, "wb") as dest:
+            shutil.copyfileobj(source, dest, length=64 * 1024)
+    finally:
+        close = getattr(source, "close", None)
+        if callable(close):
+            close()
+
+
+@shared_task(bind=True)
+def process_resize_job(self, job_id, preset_ids=None, custom_sizes=None):
+    """Process a resize job: download source, resize to all requested sizes, upload results."""
+    from .models import ResizeJob, ResizeOutput, ResizePreset
+
+    preset_ids = preset_ids or []
+    custom_sizes = custom_sizes or []
 
     try:
         job = ResizeJob.objects.get(id=job_id)
@@ -123,75 +211,62 @@ def process_resize_job(self, job_id, preset_ids=None, custom_sizes=None):
 
     try:
         job.status = ResizeJob.Status.PROCESSING
-        job.save(update_fields=["status"])
+        job.error_message = ""
+        job.save(update_fields=["status", "error_message"])
 
-        source_path = None
-        temp_dir = None
+        temp_dir = tempfile.mkdtemp()
+        source_path = os.path.join(temp_dir, f"source_{uuid.uuid4()}")
 
         try:
-            # Download or fetch source
-            if job.source_type == "URL":
-                import requests
-                temp_dir = tempfile.mkdtemp()
-                source_path = os.path.join(temp_dir, f"source_{uuid.uuid4()}")
-                resp = requests.get(job.source_url, stream=True, timeout=120)
-                resp.raise_for_status()
-                with open(source_path, "wb") as f:
-                    for chunk in resp.iter_content(chunk_size=65536):
-                        if chunk:
-                            f.write(chunk)
+            if job.source_type == ResizeJob.SourceType.URL:
+                _download_remote_image(job.source_url, source_path)
             else:
-                # Fetch from storage backend
-                temp_dir = tempfile.mkdtemp()
-                source_path = os.path.join(temp_dir, f"source_{uuid.uuid4()}")
-                # TODO: Stream download from storage backend
-                # For now assume the file is accessible locally
-                local_path = os.path.join(settings.MEDIA_ROOT, job.source_key)
-                if os.path.exists(local_path):
-                    import shutil
-                    shutil.copy2(local_path, source_path)
-                else:
-                    raise FileNotFoundError(f"Source file not found: {local_path}")
+                _copy_stored_source(job.source_key, source_path)
 
-            # Validate and read original image properties
-            try:
-                import pyvips
-                img = pyvips.Image.new_from_file(source_path)
-                job.original_width = img.width
-                job.original_height = img.height
-                job.original_format = img.get("vips-loader").upper()
-            except Exception:
-                from PIL import Image
-                with Image.open(source_path) as img:
-                    job.original_width, job.original_height = img.size
-                    job.original_format = img.format or "UNKNOWN"
+            validate_image_path(source_path)
+
+            with Image.open(source_path) as image:
+                job.original_width, job.original_height = image.size
+                job.original_format = (image.format or "UNKNOWN").upper()
             job.save(update_fields=["original_width", "original_height", "original_format"])
 
-            ext = os.path.splitext(job.original_filename)[1] or ".jpg"
+            ext = EXTENSION_BY_FORMAT.get(job.original_format, ".jpg")
 
-            # Build size list from presets + custom sizes
             sizes = []
             if preset_ids:
-                presets = ResizePreset.objects.filter(id__in=preset_ids, is_active=True)
-                for preset in presets:
-                    sizes.append({
-                        "label": preset.name,
-                        "width": preset.width,
-                        "height": preset.height,
-                        "preset_id": preset.id,
-                    })
-            for cs in custom_sizes:
+                presets = ResizePreset.objects.filter(
+                    Q(is_predefined=True) | Q(user=job.user),
+                    id__in=preset_ids,
+                    is_active=True,
+                )
+                presets_by_id = {str(preset.id): preset for preset in presets}
+                for preset_id in dict.fromkeys(str(pid) for pid in preset_ids):
+                    preset = presets_by_id.get(preset_id)
+                    if preset:
+                        sizes.append({
+                            "label": preset.name,
+                            "width": preset.width,
+                            "height": preset.height,
+                            "preset_id": preset.id,
+                        })
+
+            for custom_size in custom_sizes:
                 sizes.append({
-                    "label": cs.get("label", f"{cs['width']}x{cs['height']}"),
-                    "width": cs["width"],
-                    "height": cs["height"],
+                    "label": custom_size.get("label") or f"{custom_size['width']}x{custom_size['height']}",
+                    "width": int(custom_size["width"]),
+                    "height": int(custom_size["height"]),
                     "preset_id": None,
                 })
 
-            # Resize and upload each output
-            for size in sizes:
-                label_slug = size["label"].lower().replace(" ", "-").replace("/", "-")
-                output_filename = f"{label_slug}{ext}"
+            max_outputs = getattr(settings, "MAX_OUTPUTS_PER_JOB", 20)
+            sizes = sizes[:max_outputs]
+
+            from core.storage import storage
+
+            created = 0
+            for index, size in enumerate(sizes, start=1):
+                label_slug = sanitize_label(size["label"])
+                output_filename = f"{index:02d}-{label_slug}{ext}"
                 output_path = os.path.join(temp_dir, output_filename)
 
                 try:
@@ -203,30 +278,27 @@ def process_resize_job(self, job_id, preset_ids=None, custom_sizes=None):
                         logger.error("Both pyvips and Pillow failed for %s: %s", label_slug, fallback_err)
                         continue
 
-                output_key = f"jobs/{job_id}/{output_filename}"
-                with open(output_path, "rb") as f:
-                    from io import BytesIO
-                    bio = BytesIO(f.read())
-                    storage.upload_file(bio, output_key)
-
-                file_size = os.path.getsize(output_path)
-                output_url = storage.get_url(output_key)
+                output_key = f"jobs/{job.id}/{output_filename}"
+                with open(output_path, "rb") as output_file:
+                    storage.upload_file(output_file, output_key)
 
                 ResizeOutput.objects.create(
                     job=job,
                     preset_id=size["preset_id"],
-                    label=size["label"],
+                    label=size["label"][:255],
                     width=size["width"],
                     height=size["height"],
                     output_key=output_key,
-                    output_url=output_url,
-                    file_size=file_size,
+                    output_url=storage.get_url(output_key),
+                    file_size=os.path.getsize(output_path),
                 )
+                created += 1
+
+            if created == 0:
+                raise NoOutputsGenerated("No output sizes could be generated.")
 
         finally:
-            if temp_dir and os.path.exists(temp_dir):
-                import shutil
-                shutil.rmtree(temp_dir, ignore_errors=True)
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
         job.status = ResizeJob.Status.DONE
         job.completed_at = timezone.now()

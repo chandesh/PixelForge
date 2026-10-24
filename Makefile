@@ -2,7 +2,7 @@ DC := $(shell command -v docker-compose >/dev/null 2>&1 && echo "docker-compose"
 DCE = $(DC) exec
 DCR = $(DC) run --rm
 
-.PHONY: help status init install-frontend install-backend build build-frontend build-backend build-prod build-prod-frontend build-prod-backend start start-frontend start-backend start-worker start-prod stop stop-prod restart restart-frontend restart-backend restart-worker restart-prod rebuild rebuild-frontend rebuild-backend rebuild-prod rebuild-prod-frontend rebuild-prod-backend migrate makemigrations seed db-shell db-reset logs logs-backend logs-worker logs-frontend logs-prod shell run-image-resizing bash-backend bash-frontend clean-media clean test test-backend test-frontend test-backend-watch test-frontend-watch coverage
+.PHONY: help status init install-frontend install-backend build build-frontend build-backend build-prod build-prod-frontend build-prod-backend start start-frontend start-backend start-worker start-prod stop stop-prod restart restart-frontend restart-backend restart-worker restart-prod rebuild rebuild-frontend rebuild-backend rebuild-prod rebuild-prod-frontend rebuild-prod-backend create-super-user change-password migrate makemigrations seed db-shell db-reset logs logs-backend logs-worker logs-frontend logs-prod shell run-image-resizing bash-backend bash-frontend clean-media clean test test-backend test-frontend test-backend-watch test-frontend-watch coverage
 
 .DEFAULT_GOAL := help
 
@@ -67,6 +67,15 @@ build-prod-backend: ## Build backend for production only
 
 start: ## Start all dev services
 	$(DC) up -d
+	@echo ""
+	@echo "PixelForge is running:"
+	@echo "  Frontend: http://localhost:4300"
+	@echo "  API:      http://localhost:8383"
+	@echo "  Admin:    http://localhost:8383/admin"
+	@echo ""
+	@echo "  (the frontend may take a few seconds to compile)"
+	@echo "  Logs: make logs"
+	@echo "  Stop: make stop"
 
 start-frontend: ## Start frontend dev service only
 	$(DC) up -d frontend
@@ -134,6 +143,32 @@ makemigrations: ## Generate new Django migrations
 seed: ## Load ResizePreset fixtures
 	$(DCE) backend python manage.py seed_presets
 
+create-super-user: ## Create a Django superuser (pass ARGS="--noinput ..." for scripts)
+	@if $(DCE) backend true >/dev/null 2>&1; then \
+		$(DCE) -e DJANGO_SUPERUSER_PASSWORD backend python manage.py createsuperuser $(ARGS); \
+	else \
+		echo "→ Backend is not running; starting a temporary container..."; \
+		$(DCR) -e DJANGO_SUPERUSER_PASSWORD backend python manage.py createsuperuser $(ARGS); \
+	fi
+
+change-password: ## Change a user's password (usage: make change-password EMAIL=user@example.com)
+	@if [ -z "$(EMAIL)" ]; then \
+		printf "  User email: "; \
+		read email; \
+	else \
+		email="$(EMAIL)"; \
+	fi; \
+	if [ -z "$$email" ]; then \
+		echo "  Email is required."; \
+		exit 1; \
+	fi; \
+	if $(DCE) backend true >/dev/null 2>&1; then \
+		$(DCE) backend python manage.py changepassword "$$email"; \
+	else \
+		echo "→ Backend is not running; starting a temporary container..."; \
+		$(DCR) backend python manage.py changepassword "$$email"; \
+	fi
+
 db-shell: ## Open psql shell in db container
 	$(DCE) db psql -U pixelforge pixelforge
 
@@ -177,9 +212,66 @@ bash-backend: ## Bash shell in backend container
 bash-frontend: ## Shell in frontend container
 	$(DCE) frontend sh
 
-clean-media: ## Remove all files under ./media/
-	@rm -rf media/* || true
-	@echo "Media directory cleared."
+MODE ?= orphan-media
+DRY_RUN ?= 0
+PRUNE_RECORDS ?= 0
+
+clean-media: ## Remove orphan/all media and prune broken DB records: MODE=orphan-media|all-media|prune-records, PRUNE_RECORDS=1, DRY_RUN=1 to preview
+	@mode="$(MODE)"; \
+	dry_run="$(DRY_RUN)"; \
+	prune_records="$(PRUNE_RECORDS)"; \
+	log=".media-clean.log"; \
+	case "$$mode" in orphan-media|all-media|prune-records) ;; *) echo "  Invalid MODE=$$mode (use orphan-media, all-media, or prune-records)"; exit 1;; esac; \
+	extra=""; \
+	if [ "$$prune_records" = "1" ] && [ "$$mode" != "prune-records" ]; then extra="--prune-records"; fi; \
+	if [ "$$mode" = "prune-records" ]; then prune_records=1; fi; \
+	run_clean() { \
+		if $(DCE) -T backend true </dev/null >/dev/null 2>&1; then \
+			$(DCE) -T backend python manage.py clean_media "$$@" </dev/null; \
+		else \
+			echo "→ Backend is not running; starting a temporary container..."; \
+			$(DCR) -T backend python manage.py clean_media "$$@" </dev/null; \
+		fi; \
+	}; \
+	echo "=== $$(date -u +%Y-%m-%dT%H:%M:%SZ) clean-media mode=$$mode prune_records=$$prune_records user=$$(whoami) ===" | tee -a "$$log"; \
+	if [ "$$dry_run" = "1" ]; then \
+		tmp=$$(mktemp); \
+		run_clean "$$mode" $$extra --dry-run > "$$tmp" 2>&1; \
+		status=$$?; \
+		cat "$$tmp" | tee -a "$$log"; \
+		rm -f "$$tmp"; \
+		exit $$status; \
+	fi; \
+	preview=$$(mktemp); \
+	run_clean "$$mode" $$extra --dry-run > "$$preview" 2>&1; \
+	status=$$?; \
+	if [ $$status -ne 0 ]; then \
+		cat "$$preview" | tee -a "$$log"; \
+		rm -f "$$preview"; \
+		exit $$status; \
+	fi; \
+	cat "$$preview"; \
+	if grep -q "Nothing to delete." "$$preview"; then \
+		cat "$$preview" | tee -a "$$log" >/dev/null; \
+		rm -f "$$preview"; \
+		exit 0; \
+	fi; \
+	printf "  Continue with deletion? [y/N] "; \
+	read confirm; \
+	if [ "$$confirm" = "y" ] || [ "$$confirm" = "Y" ]; then \
+		cat "$$preview" | tee -a "$$log" >/dev/null; \
+		rm -f "$$preview"; \
+		tmp=$$(mktemp); \
+		run_clean "$$mode" $$extra --yes > "$$tmp" 2>&1; \
+		status=$$?; \
+		cat "$$tmp" | tee -a "$$log"; \
+		rm -f "$$tmp"; \
+		exit $$status; \
+	else \
+		cat "$$preview" | tee -a "$$log" >/dev/null; \
+		rm -f "$$preview"; \
+		echo "  Cancelled." | tee -a "$$log"; \
+	fi
 
 clean: ## Stop containers, remove volumes, clean media (with confirmation)
 	@read -p "  This will DELETE all data and containers. Continue? [y/N] " confirm; \

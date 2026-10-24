@@ -18,7 +18,7 @@ export default defineConfig({
   plugins: testPlugins,
   test: {
     globals: true,
-    environment: 'jsdom',
+    environment: 'happy-dom',
     setupFiles: ['src/test-setup.ts'],
     include: ['src/**/*.spec.ts'],
     exclude: ['node_modules', 'dist'],

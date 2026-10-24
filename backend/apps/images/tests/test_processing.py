@@ -4,10 +4,18 @@ import pytest
 import os
 import tempfile
 from io import BytesIO
+
+from PIL import Image
 from django.urls import reverse
 from apps.images.models import ResizeJob, ResizeOutput
 
 pytestmark = pytest.mark.django_db
+
+
+def _png_bytes(width=2, height=2):
+    buffer = BytesIO()
+    Image.new("RGB", (width, height), (255, 0, 0)).save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 def _dummy_process(source_path, dest_path, width, height):
@@ -18,15 +26,9 @@ def _dummy_process(source_path, dest_path, width, height):
 
 def _create_upload_job(authenticated_client, sample_preset):
     """Helper to create a minimal upload-based job."""
-    minimal_png = (
-        b"\x89PNG\r\n\x1a\n"
-        b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-        b"\x08\x02\x00\x00\x00\x90wS\xde"
-        b"\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N"
-        b"\x00\x00\x00\x00IEND\xaeB`\x82"
-    )
+    image_bytes = _png_bytes()
     from django.core.files.uploadedfile import SimpleUploadedFile
-    img = SimpleUploadedFile("test.png", minimal_png, content_type="image/png")
+    img = SimpleUploadedFile("test.png", image_bytes, content_type="image/png")
     return authenticated_client.post(
         reverse("jobs-handler"),
         {"source_type": "UPLOAD", "file": img, "preset_ids": json.dumps([str(sample_preset.id)])},
@@ -71,18 +73,14 @@ def test_process_resize_job_handles_total_failure(authenticated_client, sample_p
     resp = _create_upload_job(authenticated_client, sample_preset)
     job_id = resp.data["data"]["id"]
     job = ResizeJob.objects.get(id=job_id)
-    assert job.status == "DONE"
+    assert job.status == "FAILED"
 
 
 def test_process_resize_job_url_source(authenticated_client, sample_preset, mocker):
-    valid_png = (
-        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00"
-        b"\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
-    )
+    image_bytes = _png_bytes()
     mock_resp = mocker.Mock()
     mock_resp.status_code = 200
-    mock_resp.iter_content.return_value = [valid_png]
+    mock_resp.iter_content.return_value = [image_bytes]
     mock_resp.raise_for_status = mocker.Mock()
     mocker.patch("requests.get", return_value=mock_resp)
     mocker.patch("apps.images.tasks._process_with_pyvips", side_effect=_dummy_process)
@@ -121,15 +119,9 @@ def test_process_resize_job_custom_sizes(authenticated_client, mocker):
     mocker.patch("apps.images.tasks._process_with_pyvips", side_effect=_dummy_process)
     mocker.patch("apps.images.tasks._process_with_pillow", side_effect=_dummy_process)
 
-    minimal_png = (
-        b"\x89PNG\r\n\x1a\n"
-        b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-        b"\x08\x02\x00\x00\x00\x90wS\xde"
-        b"\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N"
-        b"\x00\x00\x00\x00IEND\xaeB`\x82"
-    )
+    image_bytes = _png_bytes()
     from django.core.files.uploadedfile import SimpleUploadedFile
-    img = SimpleUploadedFile("test.png", minimal_png, content_type="image/png")
+    img = SimpleUploadedFile("test.png", image_bytes, content_type="image/png")
 
     response = authenticated_client.post(
         reverse("jobs-handler"),

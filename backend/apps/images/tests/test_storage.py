@@ -40,6 +40,25 @@ class TestLocalBackend:
         url = backend.get_url("test_dir/test.png")
         assert url == "/media/test_dir/test.png"
 
+    def test_local_backend_open_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(settings, "MEDIA_ROOT", str(tmp_path))
+        backend = LocalBackend()
+        backend.upload_file(io.BytesIO(b"read me"), "dir/read.txt")
+        with backend.open_file("dir/read.txt") as file_obj:
+            assert file_obj.read() == b"read me"
+
+    def test_local_backend_open_missing_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(settings, "MEDIA_ROOT", str(tmp_path))
+        backend = LocalBackend()
+        with pytest.raises(FileNotFoundError):
+            backend.open_file("missing.txt")
+
+    def test_local_backend_rejects_path_traversal(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(settings, "MEDIA_ROOT", str(tmp_path))
+        backend = LocalBackend()
+        with pytest.raises(ValueError):
+            backend.open_file("../outside.txt")
+
     def test_local_backend_delete(self, tmp_path, monkeypatch):
         monkeypatch.setattr(settings, "MEDIA_ROOT", str(tmp_path))
         monkeypatch.setattr(settings, "MEDIA_URL", "/media/")
@@ -62,6 +81,18 @@ class TestS3Backend:
         returned_key = backend.upload_file(file_obj, "test.png")
         assert returned_key == "test.png"
         client_instance.upload_fileobj.assert_called_once()
+
+    @override_settings(**AWS_S3_OVERRIDES)
+    def test_s3_backend_open_missing_key_normalizes_to_file_not_found(self, mocker):
+        from botocore.exceptions import ClientError
+
+        mock_client = mocker.patch("boto3.client")
+        mock_client.return_value.get_object.side_effect = ClientError(
+            {"Error": {"Code": "NoSuchKey", "Message": "missing"}}, "GetObject"
+        )
+        backend = S3Backend()
+        with pytest.raises(FileNotFoundError):
+            backend.open_file("missing.png")
 
     @override_settings(**AWS_S3_OVERRIDES)
     def test_s3_backend_get_signed_url(self, mocker):

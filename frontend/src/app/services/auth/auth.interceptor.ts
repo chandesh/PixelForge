@@ -1,20 +1,22 @@
-import { HttpInterceptorFn, HttpRequest, HttpHandlerFn, HttpEvent, HttpErrorResponse } from "@angular/common/http";
+import {
+  HttpInterceptorFn,
+  HttpRequest,
+  HttpHandlerFn,
+  HttpEvent,
+  HttpErrorResponse,
+} from "@angular/common/http";
 import { inject } from "@angular/core";
-import { Router } from "@angular/router";
-import { BehaviorSubject, Observable, throwError } from "rxjs";
-import { catchError, filter, switchMap, take } from "rxjs/operators";
+import { Observable, throwError } from "rxjs";
+import { catchError, finalize, map, shareReplay, switchMap } from "rxjs/operators";
 import { AuthService } from "./auth.service";
-import { ACCESS_KEY } from "./auth.service";
 
-let isRefreshing = false;
-const refreshSubject = new BehaviorSubject<string | null>(null);
+let refreshInFlight$: Observable<string> | null = null;
 
 export const authInterceptor: HttpInterceptorFn = (
   req: HttpRequest<unknown>,
   next: HttpHandlerFn
 ): Observable<HttpEvent<unknown>> => {
   const authService = inject(AuthService);
-  const router = inject(Router);
   const token = authService.getAccessToken();
 
   if (token && req.url.startsWith("/api")) {
@@ -24,7 +26,7 @@ export const authInterceptor: HttpInterceptorFn = (
   return next(req).pipe(
     catchError((error) => {
       if (error instanceof HttpErrorResponse && error.status === 401 && !req.url.includes("/auth/")) {
-        return handle401(req, next, authService, router);
+        return handle401(req, next, authService);
       }
       return throwError(() => error);
     })
@@ -34,35 +36,33 @@ export const authInterceptor: HttpInterceptorFn = (
 function handle401(
   req: HttpRequest<unknown>,
   next: HttpHandlerFn,
-  authService: AuthService,
-  router: Router
+  authService: AuthService
 ): Observable<HttpEvent<unknown>> {
-  if (!isRefreshing) {
-    isRefreshing = true;
-    refreshSubject.next(null);
+  return refreshAccessToken(authService).pipe(
+    switchMap((token) =>
+      next(req.clone({ setHeaders: { Authorization: `Bearer ${token}` } }))
+    )
+  );
+}
 
-    return authService.refreshToken().pipe(
-      switchMap((res: any) => {
-        isRefreshing = false;
-        const newToken = res.access;
-        refreshSubject.next(newToken);
-        localStorage.setItem(ACCESS_KEY, newToken);
-        return next(req.clone({ setHeaders: { Authorization: `Bearer ${newToken}` } }));
+function refreshAccessToken(authService: AuthService): Observable<string> {
+  if (!refreshInFlight$) {
+    refreshInFlight$ = authService.refreshToken().pipe(
+      map((response) => {
+        if (!response?.access) {
+          throw new Error("Refresh response did not include an access token.");
+        }
+        return response.access;
       }),
-      catchError((err) => {
-        isRefreshing = false;
-        authService.logout();
-        router.navigate(["/login"]);
-        return throwError(() => err);
-      })
-    );
-  } else {
-    return refreshSubject.pipe(
-      filter((token) => token !== null),
-      take(1),
-      switchMap((token) =>
-        next(req.clone({ setHeaders: { Authorization: `Bearer ${token}` } }))
-      )
+      catchError((error) => {
+        authService.logout("/login");
+        return throwError(() => error);
+      }),
+      finalize(() => {
+        refreshInFlight$ = null;
+      }),
+      shareReplay({ bufferSize: 1, refCount: false })
     );
   }
+  return refreshInFlight$;
 }

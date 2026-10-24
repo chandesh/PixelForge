@@ -211,8 +211,10 @@ Files are uploaded via `boto3` and accessed through pre-signed URLs. The `./medi
 | `make shell` | Django shell in backend container |
 | `make bash-backend` | Bash in backend container |
 | `make bash-frontend` | Shell in frontend container |
-| `make clean-media` | Remove all files under ./media/ |
+| `make clean-media` | Remove orphan media (default); `MODE=all-media` for everything, `MODE=prune-records` for broken DB rows, `PRUNE_RECORDS=1` to combine with a file mode, `DRY_RUN=1` to preview |
 | `make clean` | Full reset (containers, volumes, media) |
+
+Media cleanup always previews first, asks for `y/N` confirmation, and appends an audit entry to `.media-clean.log`. It only supports the local storage backend.
 
 ### Testing
 | Target | Description |

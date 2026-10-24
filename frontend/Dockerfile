@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 # ─── Multi-stage Dockerfile ────────────────────────────────
 # node_modules are installed in a separate deps stage.
 # npm ci only re-runs when package.json or package-lock.json changes.
@@ -7,7 +8,7 @@
 FROM node:20-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
 
 # Stage 2 — dev: development with hot reload
 FROM node:20-slim AS dev

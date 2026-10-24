@@ -1,12 +1,12 @@
 """Image views for PixelForge."""
 import uuid
 import os
-import io
+import shutil
+import tempfile
 import zipfile
 from django.shortcuts import get_object_or_404
-from django.db.models import Count, Sum
+from django.db.models import Count, Prefetch, Q, Sum
 from django.utils import timezone
-from django.conf import settings
 from django.http import FileResponse
 from rest_framework import status
 from rest_framework.response import Response
@@ -22,6 +22,15 @@ from .serializers import (
 )
 from core.storage import storage
 from .tasks import process_resize_job
+
+
+def _jobs_with_outputs():
+    return ResizeJob.objects.prefetch_related(
+        Prefetch(
+            "outputs",
+            queryset=ResizeOutput.objects.select_related("preset").order_by("created_at"),
+        )
+    )
 
 
 class PresetListView(APIView):
@@ -85,7 +94,7 @@ class CustomPresetDetailView(RetrieveUpdateDestroyAPIView):
 
 class JobListCreateView(APIView):
     def get(self, request):
-        jobs = ResizeJob.objects.filter(user=request.user, is_deleted=False)
+        jobs = _jobs_with_outputs().filter(user=request.user, is_deleted=False)
         status_filter = request.query_params.get("status")
         search = request.query_params.get("search")
         if status_filter:
@@ -98,15 +107,13 @@ class JobListCreateView(APIView):
             page_size = int(request.query_params.get("page_size", 20))
         except (ValueError, TypeError):
             page, page_size = 1, 20
-        if page < 1:
-            page = 1
-        if page_size < 1:
-            page_size = 20
+        page = max(page, 1)
+        page_size = min(max(page_size, 1), 100)
 
         start = (page - 1) * page_size
         end = start + page_size
         total = jobs.count()
-        jobs_page = jobs[start:end]
+        jobs_page = list(jobs[start:end])
 
         serializer = ResizeJobListSerializer(jobs_page, many=True)
         return Response({
@@ -123,34 +130,23 @@ class JobListCreateView(APIView):
         })
 
     def post(self, request):
-        serializer = CreateJobSerializer(data=request.data)
+        serializer = CreateJobSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
         source_type = data["source_type"]
         source_url = data.get("source_url", "")
-        uploaded_file = request.FILES.get("file")
-
-        if source_type == "UPLOAD" and not uploaded_file:
-            return Response(
-                {"success": False, "data": None, "message": "File is required for upload source type.", "errors": None},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if source_type == "URL" and not source_url:
-            return Response(
-                {"success": False, "data": None, "message": "URL is required for URL source type.", "errors": None},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        uploaded_file = data.get("file")
 
         if uploaded_file:
-            ext = os.path.splitext(uploaded_file.name)[1]
+            ext = os.path.splitext(uploaded_file.name)[1].lower()
             key = f"uploads/{uuid.uuid4()}{ext}"
             storage.upload_file(uploaded_file, key)
-            original_filename = uploaded_file.name
+            original_filename = os.path.basename(uploaded_file.name) or f"upload{ext}"
             original_size = uploaded_file.size
         else:
             key = ""
-            original_filename = os.path.basename(source_url.rstrip("/"))
+            original_filename = os.path.basename(source_url.rstrip("/")) or "image"
             original_size = 0
 
         job = ResizeJob.objects.create(
@@ -162,7 +158,12 @@ class JobListCreateView(APIView):
             original_size=original_size,
         )
 
-        process_resize_job.delay(str(job.id), data.get("preset_ids", []), data.get("custom_sizes", []))
+        try:
+            process_resize_job.delay(str(job.id), data.get("preset_ids", []), data.get("custom_sizes", []))
+        except Exception:
+            job.status = ResizeJob.Status.FAILED
+            job.error_message = "Could not queue the image for processing. Please try again."
+            job.save(update_fields=["status", "error_message"])
 
         detail_serializer = ResizeJobDetailSerializer(job)
         return Response(
@@ -173,7 +174,12 @@ class JobListCreateView(APIView):
 
 class JobDetailView(APIView):
     def get_object(self, request, job_id):
-        return get_object_or_404(ResizeJob, id=job_id, user=request.user, is_deleted=False)
+        return get_object_or_404(
+            _jobs_with_outputs(),
+            id=job_id,
+            user=request.user,
+            is_deleted=False,
+        )
 
     def get(self, request, job_id):
         job = self.get_object(request, job_id)
@@ -197,31 +203,50 @@ class JobDownloadView(APIView):
             )
 
         output_id = request.query_params.get("output_id")
-        outputs = job.outputs.all()
+        outputs = list(job.outputs.all())
 
         if output_id:
-            output = get_object_or_404(ResizeOutput, id=output_id, job=job)
-            file_path = os.path.join(settings.MEDIA_ROOT, output.output_key)
-            if not os.path.exists(file_path):
+            output = next((item for item in outputs if str(item.id) == str(output_id)), None)
+            if output is None:
                 return Response(
-                    {"success": False, "data": None, "message": "Output file not found on disk.", "errors": None},
+                    {"success": False, "data": None, "message": "Output not found.", "errors": None},
                     status=status.HTTP_404_NOT_FOUND,
                 )
-            filename = f"{output.label}{os.path.splitext(output.output_key)[1]}"
-            return FileResponse(open(file_path, "rb"), as_attachment=True, filename=filename)
+            try:
+                file_obj = storage.open_file(output.output_key)
+            except (FileNotFoundError, OSError):
+                return Response(
+                    {"success": False, "data": None, "message": "Output file not found.", "errors": None},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            filename = os.path.basename(output.output_key) or f"output-{output.id}"
+            return FileResponse(file_obj, as_attachment=True, filename=filename)
 
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            for output in outputs:
-                file_path = os.path.join(settings.MEDIA_ROOT, output.output_key)
-                if os.path.exists(file_path):
-                    arcname = f"{output.label}{os.path.splitext(output.output_key)[1]}"
-                    zf.write(file_path, arcname)
-        buf.seek(0)
+        if not outputs:
+            return Response(
+                {"success": False, "data": None, "message": "No outputs available.", "errors": None},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
-        base_name = os.path.splitext(job.original_filename)[0] or "images"
-        zip_filename = f"{base_name}-resized.zip"
-        return FileResponse(buf, as_attachment=True, filename=zip_filename)
+        archive = tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024, mode="w+b")
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            for index, output in enumerate(outputs, start=1):
+                try:
+                    file_obj = storage.open_file(output.output_key)
+                except (FileNotFoundError, OSError):
+                    continue
+                try:
+                    arcname = os.path.basename(output.output_key) or f"output-{index}.jpg"
+                    with zip_file.open(arcname, "w") as dest:
+                        shutil.copyfileobj(file_obj, dest, length=64 * 1024)
+                finally:
+                    close = getattr(file_obj, "close", None)
+                    if callable(close):
+                        close()
+        archive.seek(0)
+
+        base_name = os.path.splitext(os.path.basename(job.original_filename))[0] or "images"
+        return FileResponse(archive, as_attachment=True, filename=f"{base_name}-resized.zip")
 
 
 CATEGORY_LABELS = dict(ResizePreset.Category.choices)
@@ -233,7 +258,14 @@ class DashboardStatsView(APIView):
         jobs = ResizeJob.objects.filter(user=user, is_deleted=False)
         outputs = ResizeOutput.objects.filter(job__user=user, job__is_deleted=False)
 
-        total_jobs = jobs.count()
+        status_counts = jobs.aggregate(
+            total=Count("id"),
+            done=Count("id", filter=Q(status=ResizeJob.Status.DONE)),
+            failed=Count("id", filter=Q(status=ResizeJob.Status.FAILED)),
+            processing=Count("id", filter=Q(status=ResizeJob.Status.PROCESSING)),
+            pending=Count("id", filter=Q(status=ResizeJob.Status.PENDING)),
+        )
+        total_jobs = status_counts["total"]
         total_outputs = outputs.count()
 
         now = timezone.now()
@@ -282,21 +314,28 @@ class DashboardStatsView(APIView):
             }
 
         status_breakdown = {
-            status: jobs.filter(status=status).count()
-            for status in ["DONE", "FAILED", "PROCESSING", "PENDING"]
+            "DONE": status_counts["done"],
+            "FAILED": status_counts["failed"],
+            "PROCESSING": status_counts["processing"],
+            "PENDING": status_counts["pending"],
         }
 
-        recent_jobs_qs = jobs.order_by("-created_at")[:5]
+        recent_jobs_qs = jobs.order_by("-created_at")[:5].prefetch_related(
+            Prefetch(
+                "outputs",
+                queryset=ResizeOutput.objects.order_by("created_at"),
+            )
+        )
         recent_jobs_data = []
         for j in recent_jobs_qs:
-            first_output = j.outputs.first()
-            thumbnail_url = first_output.output_url if first_output else None
+            job_outputs = list(j.outputs.all())
+            first_output = next((output for output in job_outputs if output.output_url), None)
             recent_jobs_data.append({
                 "id": str(j.id),
                 "original_filename": j.original_filename,
                 "status": j.status.lower(),
-                "output_count": j.outputs.count(),
-                "thumbnail_url": thumbnail_url,
+                "output_count": len(job_outputs),
+                "thumbnail_url": first_output.output_url if first_output else None,
                 "created_at": j.created_at.isoformat(),
             })
 

@@ -140,6 +140,40 @@ describe("AuthService", () => {
     expect(router.navigate).toHaveBeenCalledWith(["/"]);
   });
 
+  it("refreshToken() stores rotated access and refresh tokens", () => {
+    localStorage.setItem("pixelforge_refresh_token", "old-refresh");
+
+    service.refreshToken().subscribe((response) => {
+      expect(response.access).toBe("new-access");
+      expect(localStorage.getItem("pixelforge_access_token")).toBe("new-access");
+      expect(localStorage.getItem("pixelforge_refresh_token")).toBe("new-refresh");
+    });
+
+    const req = httpMock.expectOne("/api/auth/refresh/");
+    expect(req.request.body).toEqual({ refresh: "old-refresh" });
+    req.flush({ access: "new-access", refresh: "new-refresh" });
+  });
+
+  it("refreshToken() keeps the existing refresh token when rotation is disabled", () => {
+    localStorage.setItem("pixelforge_refresh_token", "old-refresh");
+
+    service.refreshToken().subscribe();
+
+    const req = httpMock.expectOne("/api/auth/refresh/");
+    req.flush({ access: "new-access" });
+    expect(localStorage.getItem("pixelforge_refresh_token")).toBe("old-refresh");
+  });
+
+  it("logout() supports an explicit redirect target", () => {
+    localStorage.setItem("pixelforge_refresh_token", "ref");
+
+    service.logout("/login");
+    const req = httpMock.expectOne("/api/auth/logout/");
+    req.flush({ success: true, data: null, message: "Logged out.", errors: null });
+
+    expect(router.navigate).toHaveBeenCalledWith(["/login"]);
+  });
+
   it("isLoggedIn() returns true when token exists", () => {
     localStorage.setItem("pixelforge_access_token", "some-token");
     expect(service.isLoggedIn()).toBe(true);

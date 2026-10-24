@@ -1,5 +1,6 @@
 """User serializers for PixelForge."""
 from rest_framework import serializers
+from django.contrib.auth.password_validation import validate_password
 from .models import User
 
 
@@ -14,6 +15,10 @@ class ChangePasswordSerializer(serializers.Serializer):
     current_password = serializers.CharField(required=True)
     new_password = serializers.CharField(required=True, min_length=8)
     confirm_password = serializers.CharField(required=True)
+
+    def validate_new_password(self, value):
+        validate_password(value)
+        return value
 
     def validate(self, attrs):
         if attrs["new_password"] != attrs["confirm_password"]:

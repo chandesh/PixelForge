@@ -1,7 +1,8 @@
 """S3 storage backend for production."""
 import mimetypes
-from io import BytesIO
+
 import boto3
+from botocore.exceptions import ClientError
 from django.conf import settings
 from .base import StorageBackend
 
@@ -25,6 +26,16 @@ class S3Backend(StorageBackend):
             content_type = "application/octet-stream"
         self.client.upload_fileobj(file_obj, self.bucket, key, ExtraArgs={"ContentType": content_type})
         return key
+
+    def open_file(self, key: str):
+        try:
+            response = self.client.get_object(Bucket=self.bucket, Key=key)
+        except ClientError as exc:
+            code = str(exc.response.get("Error", {}).get("Code", ""))
+            if code in ("NoSuchKey", "404", "NotFound"):
+                raise FileNotFoundError(f"Storage key not found: {key}") from exc
+            raise
+        return response["Body"]
 
     def get_url(self, key: str) -> str:
         return self.client.generate_presigned_url(

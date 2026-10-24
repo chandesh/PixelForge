@@ -1,5 +1,6 @@
 """Abstract storage backend for PixelForge."""
 from abc import ABC, abstractmethod
+from typing import BinaryIO
 
 
 class StorageBackend(ABC):
@@ -8,6 +9,11 @@ class StorageBackend(ABC):
     @abstractmethod
     def upload_file(self, file_obj, key: str) -> str:
         """Upload a file-like object to the given key. Returns the stored key."""
+        ...
+
+    @abstractmethod
+    def open_file(self, key: str) -> BinaryIO:
+        """Open the file at the given key for reading. Caller must close it."""
         ...
 
     @abstractmethod

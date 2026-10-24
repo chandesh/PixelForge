@@ -89,6 +89,13 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 AUTH_USER_MODEL = "users.User"
 
+# ─── Image processing limits ──────────────────────────────
+MAX_IMAGE_UPLOAD_BYTES = int(os.environ.get("MAX_IMAGE_UPLOAD_BYTES", str(25 * 1024 * 1024)))
+MAX_IMAGE_DOWNLOAD_BYTES = int(os.environ.get("MAX_IMAGE_DOWNLOAD_BYTES", str(25 * 1024 * 1024)))
+MAX_IMAGE_DIMENSION = int(os.environ.get("MAX_IMAGE_DIMENSION", "10000"))
+MAX_OUTPUTS_PER_JOB = int(os.environ.get("MAX_OUTPUTS_PER_JOB", "20"))
+REMOTE_FETCH_TIMEOUT_SECONDS = int(os.environ.get("REMOTE_FETCH_TIMEOUT_SECONDS", "30"))
+
 # ─── DRF ──────────────────────────────────────────────────
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (

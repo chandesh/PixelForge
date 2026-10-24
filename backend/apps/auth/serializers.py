@@ -1,6 +1,7 @@
 """Auth serializers for PixelForge."""
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
 
 User = get_user_model()
 
@@ -12,6 +13,10 @@ class RegisterSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ("name", "email", "password", "confirm_password")
+
+    def validate_password(self, value):
+        validate_password(value)
+        return value
 
     def validate(self, attrs):
         if attrs["password"] != attrs["confirm_password"]:

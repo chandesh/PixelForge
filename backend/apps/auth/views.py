@@ -90,6 +90,6 @@ def logout(request):
             token = RefreshToken(refresh_token)
             token.blacklist()
         except Exception:
-            logger.warning("Logout with already-invalidated token: %s", refresh_token[:20])
+            logger.info("Logout requested with an invalid or expired refresh token.")
             # Idempotent — always return 200 even if token is invalid/expired
     return Response({"success": True, "data": None, "message": "Logged out.", "errors": None})
