@@ -57,6 +57,18 @@ def test_preset_count_per_category(authenticated_client):
     assert len(data.get("THUMBNAIL", [])) >= 5
 
 
+def test_invalid_dimension_preset_excluded(authenticated_client):
+    from apps.images.models import ResizePreset
+    ResizePreset.objects.create(name="Placeholder", slug="placeholder", width=0, height=0, category="CUSTOM")
+    ResizePreset.objects.create(name="Valid", slug="valid", width=100, height=100, category="CUSTOM")
+
+    response = authenticated_client.get(PRESETS_URL)
+    data = response.data["data"]
+    preset_names = [p["name"] for p in data.get("CUSTOM", [])]
+    assert "Valid" in preset_names
+    assert "Placeholder" not in preset_names
+
+
 def test_inactive_preset_excluded(authenticated_client):
     from apps.images.models import ResizePreset
     active = ResizePreset.objects.create(name="Active", slug="active", width=100, height=100, category="SOCIAL", is_active=True)

@@ -217,7 +217,7 @@ class CreateJobSerializer(serializers.Serializer):
 
         preset_ids = attrs.get("preset_ids") or []
         custom_sizes = attrs.get("custom_sizes") or []
-        max_outputs = getattr(settings, "MAX_OUTPUTS_PER_JOB", 20)
+        max_outputs = getattr(settings, "MAX_OUTPUTS_PER_JOB", 50)
         if not preset_ids and not custom_sizes:
             raise serializers.ValidationError("Select at least one preset or custom size.")
         if len(preset_ids) + len(custom_sizes) > max_outputs:
@@ -232,6 +232,8 @@ class CreateJobSerializer(serializers.Serializer):
                 Q(is_predefined=True) | Q(user=user),
                 id__in=preset_ids,
                 is_active=True,
+                width__gt=0,
+                height__gt=0,
             )
             allowed_ids = {str(preset_id) for preset_id in allowed.values_list("id", flat=True)}
             missing = [preset_id for preset_id in preset_ids if preset_id not in allowed_ids]

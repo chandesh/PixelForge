@@ -238,6 +238,8 @@ def process_resize_job(self, job_id, preset_ids=None, custom_sizes=None):
                     Q(is_predefined=True) | Q(user=job.user),
                     id__in=preset_ids,
                     is_active=True,
+                    width__gt=0,
+                    height__gt=0,
                 )
                 presets_by_id = {str(preset.id): preset for preset in presets}
                 for preset_id in dict.fromkeys(str(pid) for pid in preset_ids):
@@ -258,7 +260,7 @@ def process_resize_job(self, job_id, preset_ids=None, custom_sizes=None):
                     "preset_id": None,
                 })
 
-            max_outputs = getattr(settings, "MAX_OUTPUTS_PER_JOB", 20)
+            max_outputs = getattr(settings, "MAX_OUTPUTS_PER_JOB", 50)
             sizes = sizes[:max_outputs]
 
             from core.storage import storage

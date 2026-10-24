@@ -68,14 +68,23 @@ import { ImageService, PresetGroup, Preset, CustomPreset, ResizeJob } from "../.
 
           <div>
             <h4 class="text-sm font-medium text-text-secondary mb-3">Standard Sizes</h4>
-            <div class="flex gap-2 flex-wrap mb-4">
-              @for (cat of categoryKeys(); track cat) {
-                <button (click)="selectedCategory.set(cat)"
-                        [class]="'px-4 py-2 rounded-lg text-sm transition ' +
-                          (selectedCategory() === cat ? 'bg-accent text-primary-dark font-medium' : 'bg-surface-light text-text-secondary hover:text-text-primary')">
-                  {{ categoryLabel(cat) }}
-                </button>
-              }
+            <div class="flex items-center justify-between gap-3 mb-4">
+              <div class="flex gap-2 flex-wrap">
+                @for (cat of categoryKeys(); track cat) {
+                  <button (click)="selectedCategory.set(cat)"
+                          [class]="'px-4 py-2 rounded-lg text-sm transition ' +
+                            (selectedCategory() === cat ? 'bg-accent text-primary-dark font-medium' : 'bg-surface-light text-text-secondary hover:text-text-primary')">
+                    {{ categoryLabel(cat) }}
+                  </button>
+                }
+              </div>
+              <button type="button"
+                      class="text-sm text-accent hover:underline disabled:opacity-50 disabled:no-underline whitespace-nowrap"
+                      [disabled]="filteredPresets().length === 0"
+                      [attr.aria-label]="(allCategoryPresetsSelected() ? 'Deselect all ' : 'Select all ') + categoryLabel(selectedCategory()) + ' sizes'"
+                      (click)="toggleAllCategoryPresets()">
+                {{ allCategoryPresetsSelected() ? "Deselect all" : "Select all" }} {{ categoryLabel(selectedCategory()) }}
+              </button>
             </div>
 
             @if (filteredPresets(); as presets) {
@@ -249,6 +258,11 @@ export class ResizeComponent implements OnInit {
     return cat ? (this.presets()[cat] ?? []) : [];
   });
 
+  readonly allCategoryPresetsSelected = computed(() => {
+    const presets = this.filteredPresets();
+    return presets.length > 0 && presets.every((preset) => this.isPresetSelected(preset));
+  });
+
   private formArray: FormArray = this.fb.array([]);
 
   ngOnInit(): void {
@@ -290,6 +304,25 @@ export class ResizeComponent implements OnInit {
 
   isPresetSelected(preset: Preset): boolean {
     return this.selectedPresets().some((p) => p.id === preset.id);
+  }
+
+  toggleAllCategoryPresets(): void {
+    const presets = this.filteredPresets();
+    if (presets.length === 0) {
+      return;
+    }
+
+    const categoryIds = new Set(presets.map((preset) => preset.id));
+    if (this.allCategoryPresetsSelected()) {
+      this.selectedPresets.update((list) => list.filter((preset) => !categoryIds.has(preset.id)));
+      return;
+    }
+
+    this.selectedPresets.update((list) => {
+      const byId = new Map(list.map((preset) => [preset.id, preset]));
+      presets.forEach((preset) => byId.set(preset.id, preset));
+      return [...byId.values()];
+    });
   }
 
   toggleCustomPreset(id: string): void {
@@ -421,7 +454,12 @@ export class ResizeComponent implements OnInit {
         }
       },
       error: (err) => {
-        this.error.set(err.error?.message || "Failed to create job.");
+        this.error.set(
+          err.error?.message ||
+          err.error?.non_field_errors?.[0] ||
+          err.error?.detail ||
+          "Failed to create job."
+        );
         this.currentStep.set(1);
       },
     });

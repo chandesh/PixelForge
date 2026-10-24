@@ -42,6 +42,61 @@ def test_create_job_custom_sizes(authenticated_client, uploaded_image):
     assert response.data["success"] is True
 
 
+def test_create_job_allows_all_seeded_standard_sizes(authenticated_client, uploaded_image, mocker):
+    from apps.images.models import ResizePreset
+
+    mocker.patch("apps.images.tasks.process_resize_job.delay", return_value=None)
+    presets = ResizePreset.objects.bulk_create([
+        ResizePreset(
+            name=f"Standard {index}",
+            slug=f"standard-{index}",
+            width=100 + index,
+            height=100 + index,
+            category="SOCIAL",
+            is_active=True,
+            is_predefined=True,
+        )
+        for index in range(29)
+    ])
+
+    response = authenticated_client.post(
+        JOBS_URL,
+        {
+            "source_type": "UPLOAD",
+            "file": uploaded_image,
+            "preset_ids": json.dumps([str(preset.id) for preset in presets]),
+        },
+        format="multipart",
+    )
+
+    assert response.status_code == 201
+    assert response.data["success"] is True
+
+
+def test_create_job_rejects_preset_with_invalid_dimensions(authenticated_client, uploaded_image):
+    from apps.images.models import ResizePreset
+
+    preset = ResizePreset.objects.create(
+        name="Placeholder",
+        slug="placeholder-job",
+        width=0,
+        height=0,
+        category="CUSTOM",
+    )
+
+    response = authenticated_client.post(
+        JOBS_URL,
+        {
+            "source_type": "UPLOAD",
+            "file": uploaded_image,
+            "preset_ids": json.dumps([str(preset.id)]),
+        },
+        format="multipart",
+    )
+
+    assert response.status_code == 400
+
+
 def test_create_job_no_source(authenticated_client):
     response = authenticated_client.post(
         JOBS_URL,

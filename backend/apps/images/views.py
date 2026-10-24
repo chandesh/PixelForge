@@ -35,7 +35,13 @@ def _jobs_with_outputs():
 
 class PresetListView(APIView):
     def get(self, request):
-        presets = ResizePreset.objects.filter(is_active=True, is_predefined=True, user__isnull=True)
+        presets = ResizePreset.objects.filter(
+            is_active=True,
+            is_predefined=True,
+            user__isnull=True,
+            width__gt=0,
+            height__gt=0,
+        )
         serializer = ResizePresetSerializer(presets, many=True)
         grouped = {}
         for p in serializer.data:

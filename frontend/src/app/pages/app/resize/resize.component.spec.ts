@@ -13,6 +13,10 @@ const mockPresetsResponse = {
         id: "p1", name: "Desktop HD", slug: "desktop-hd",
         width: 1920, height: 1080, category: "WALLPAPER", description: "",
       },
+      {
+        id: "p3", name: "Desktop 4K", slug: "desktop-4k",
+        width: 3840, height: 2160, category: "WALLPAPER", description: "",
+      },
     ],
     SOCIAL: [
       {
@@ -132,6 +136,59 @@ describe("ResizeComponent", () => {
     component.process();
 
     expect(component.error()).toContain("Upload failed");
+    expect(component.currentStep()).toBe(1);
+  });
+
+  it("selects all presets in the current category only", () => {
+    component.toggleAllCategoryPresets();
+
+    expect(component.selectedPresets().map((preset) => preset.id)).toEqual(["p1", "p3"]);
+    expect(component.allCategoryPresetsSelected()).toBe(true);
+
+    component.selectedCategory.set("SOCIAL");
+    expect(component.allCategoryPresetsSelected()).toBe(false);
+
+    component.toggleAllCategoryPresets();
+    expect(component.selectedPresets().map((preset) => preset.id)).toEqual(["p1", "p3", "p2"]);
+  });
+
+  it("clears all presets in the current category while retaining other categories", () => {
+    component.selectedPresets.set([
+      { id: "p1", name: "Desktop HD", slug: "desktop-hd", width: 1920, height: 1080, category: "WALLPAPER", description: "" },
+      { id: "p3", name: "Desktop 4K", slug: "desktop-4k", width: 3840, height: 2160, category: "WALLPAPER", description: "" },
+      { id: "p2", name: "Instagram Square", slug: "instagram-square", width: 1080, height: 1080, category: "SOCIAL", description: "" },
+    ]);
+
+    component.toggleAllCategoryPresets();
+
+    expect(component.selectedPresets().map((preset) => preset.id)).toEqual(["p2"]);
+  });
+
+  it("renders a category-scoped select all control with a deselect label", () => {
+    component.currentStep.set(1);
+    fixture.detectChanges();
+
+    const selectAll = fixture.debugElement
+      .queryAll(By.css("button"))
+      .find((button) => button.nativeElement.textContent.trim() === "Select all Wallpaper");
+
+    expect(selectAll).toBeTruthy();
+    selectAll!.nativeElement.click();
+    fixture.detectChanges();
+
+    expect(component.selectedPresets().map((preset) => preset.id)).toEqual(["p1", "p3"]);
+    expect(selectAll!.nativeElement.textContent.trim()).toBe("Deselect all Wallpaper");
+  });
+
+  it("shows validation errors returned by the API", () => {
+    imageService.createJob.mockReturnValue(
+      throwError(() => ({ error: { non_field_errors: ["A job can generate at most 50 outputs."] } }))
+    );
+
+    component.selectedFile.set(new File(["data"], "test.png", { type: "image/png" }));
+    component.process();
+
+    expect(component.error()).toBe("A job can generate at most 50 outputs.");
     expect(component.currentStep()).toBe(1);
   });
 
